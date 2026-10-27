@@ -1,0 +1,21 @@
+# Dependencies, build output, caches
+/node_modules
+/build
+/dist
+/browser/dist
+/node/*.node
+/target
+/web/pkg
+.DS_Store
+*.log
+
+# Generated proving material and test data (never commit): trusted setups, keys, witnesses
+*.ptau
+*.zkey
+*.wtns
+*.r1cs
+
+# Generated SBOMs and packages (made by the release workflow, never committed)
+*.cdx.json
+*.tgz
+pack.json

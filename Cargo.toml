@@ -1,0 +1,8 @@
+# The Rust parts of snarkjs-gpu: the shared engine, the Node addon and the WebAssembly build.
+# None of them is published to crates.io (the npm package is the product).
+[workspace]
+resolver = "2"
+members = ["engine", "node", "web"]
+
+[profile.release]
+opt-level = 3

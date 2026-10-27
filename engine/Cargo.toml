@@ -1,0 +1,11 @@
+[package]
+name = "zk-gpu-engine"
+version = "0.1.0"
+edition = "2021"
+description = "snarkjs-shaped GPU operations on top of zk-gpu, shared by the Node addon and the browser build"
+license = "GPL-3.0-or-later"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+zk-gpu = "0.1"

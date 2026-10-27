@@ -1,0 +1,65 @@
+{
+  "name": "snarkjs-gpu",
+  "version": "0.1.0",
+  "description": "Runs the heavy steps of snarkjs Groth16 proofs on the GPU in the browser (WebGPU): faster proofs without changing snarkjs.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zerotruss/snarkjs-gpu.git"
+  },
+  "homepage": "https://github.com/zerotruss/snarkjs-gpu#readme",
+  "bugs": {
+    "url": "https://github.com/zerotruss/snarkjs-gpu/issues"
+  },
+  "keywords": [
+    "snarkjs",
+    "groth16",
+    "zero-knowledge",
+    "zk",
+    "circom",
+    "webgpu",
+    "gpu",
+    "msm",
+    "ntt",
+    "bn254"
+  ],
+  "main": "dist/snarkjs-gpu.esm.js",
+  "module": "dist/snarkjs-gpu.esm.js",
+  "unpkg": "dist/snarkjs-gpu.iife.js",
+  "jsdelivr": "dist/snarkjs-gpu.iife.js",
+  "exports": {
+    ".": "./dist/snarkjs-gpu.esm.js",
+    "./iife": "./dist/snarkjs-gpu.iife.js",
+    "./wasm": "./dist/zk_gpu_web_bg.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/snarkjs-gpu.esm.js",
+    "dist/snarkjs-gpu.iife.js",
+    "dist/zk_gpu_web_bg.wasm"
+  ],
+  "peerDependencies": {
+    "snarkjs": "0.7.x"
+  },
+  "peerDependenciesMeta": {
+    "snarkjs": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build-addon.mjs",
+    "test": "node --test --test-force-exit test/gpu.test.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "test:browser": "node browser/run.mjs merkle 64",
+    "build:cdn": "node browser/build.mjs",
+    "test:cdn": "node browser/run-cdn.mjs merkle 64",
+    "build:package": "npm run build:web && npm run build:cdn"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "puppeteer-core": "^25.16.0",
+    "circomlib": "2.0.5",
+    "snarkjs": "0.7.6"
+  }
+}

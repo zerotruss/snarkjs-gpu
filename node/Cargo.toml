@@ -1,0 +1,20 @@
+[package]
+name = "zk-gpu-node"
+version = "0.1.0"
+edition = "2021"
+description = "Node.js addon that runs zk-gpu's BN254 MSM and NTT on the GPU, in snarkjs's data formats"
+license = "GPL-3.0-or-later"
+rust-version = "1.92"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zk-gpu-engine = { path = "../engine", version = "0.1.0" }
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+pollster = "1"
+
+[build-dependencies]
+napi-build = "2"

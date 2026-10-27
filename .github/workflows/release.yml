@@ -1,0 +1,213 @@
+# Release: runs only when a version tag such as v0.1.0 is pushed.
+#
+#   verify  -> checks the tag, the code and the dependencies
+#   build   -> npm package, two SBOMs (CycloneDX), checksums
+#   attest  -> signed build provenance for those files
+#   release -> a DRAFT GitHub Release with the files; a person reviews and publishes it
+#   publish -> npm (with provenance), only after a person approves the "npm" environment
+#
+# The proofs-on-a-real-GPU tests cannot run here (hosted runners have no GPU): run npm test, npm run test:browser
+# and npm run test:cdn on a real machine before pushing the tag.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify the tag and the code
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag matches package.json and points at a commit on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match package.json version $version" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "Tag is not on main" >&2; exit 1; }
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          rustup default stable
+      - name: Format and lint
+        run: |
+          cargo fmt --all --check
+          cargo clippy --release -p zk-gpu-engine -p zk-gpu-node --all-targets -- -D warnings
+          cargo clippy --release -p zk-gpu-web --target wasm32-unknown-unknown -- -D warnings
+      - name: Production dependencies have no known vulnerabilities
+        run: |
+          npm ci --ignore-scripts
+          npm audit --omit=dev --omit=peer
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  build:
+    name: Package, SBOMs, checksums
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust and wasm-pack
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+          cargo install wasm-pack --locked --version 0.15.0
+          cargo install cargo-cyclonedx --locked --version 0.5.9
+      - name: Install wasm-opt at a fixed, checked version
+        run: scripts/install-binaryen.sh >> "$GITHUB_PATH"
+      - name: Build the WebAssembly and the bundles (npm install scripts are not run)
+        run: |
+          npm ci --ignore-scripts
+          npm run build:package
+      - name: Pack
+        run: npm pack
+      - name: Software Bills of Materials (CycloneDX 1.5, JSON)
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          # the Rust code compiled into the WebAssembly file
+          cargo cyclonedx --manifest-path web/Cargo.toml --format json --target wasm32-unknown-unknown --spec-version 1.5 --override-filename wasm-deps.cdx
+          # the npm dependencies the package declares (none at runtime)
+          npm sbom --sbom-format cyclonedx --omit dev --omit peer > npm-deps.cdx.json
+      - name: Show the SBOMs on the run page
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import collections, json
+          for title, path in [("Rust code compiled into the WebAssembly file", "web/wasm-deps.cdx.json"),
+                              ("npm dependencies declared by the package", "npm-deps.cdx.json")]:
+              bom = json.load(open(path))
+              parts = bom.get("components", [])
+              licences = collections.Counter()
+              for p in parts:
+                  names = [l.get("expression") or l.get("license", {}).get("id") or "unknown" for l in p.get("licenses", [])]
+                  licences[", ".join(names) or "none declared"] += 1
+              subject = bom["metadata"]["component"]
+              print(f"## SBOM: {title}")
+              print(f"CycloneDX {bom['specVersion']} for **{subject['name']} {subject['version']}**: **{len(parts)} components**.")
+              if licences:
+                  print()
+                  print("| Licence | Components |")
+                  print("|---|---|")
+                  for name, count in licences.most_common():
+                      print(f"| {name} | {count} |")
+              print()
+          EOF
+      - name: Collect the files and write checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir dist-release
+          cp snarkjs-gpu-*.tgz dist-release/
+          cp web/wasm-deps.cdx.json "dist-release/snarkjs-gpu-${TAG}.wasm-deps.cdx.json"
+          cp npm-deps.cdx.json "dist-release/snarkjs-gpu-${TAG}.npm-deps.cdx.json"
+          (cd dist-release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          {
+            echo
+            echo "## Release files (SHA-256)"
+            echo '```'
+            cat dist-release/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: dist-release/
+          if-no-files-found: error
+
+  attest:
+    name: Build provenance
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # read the repository
+      id-token: write # sign the attestation with this workflow's identity
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist-release
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist-release/*.tgz
+            dist-release/*.cdx.json
+
+  release:
+    name: Draft GitHub Release
+    needs: attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist-release
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" dist-release/* --repo "$GITHUB_REPOSITORY" --draft --verify-tag --generate-notes --title "$TAG" $prerelease
+
+  publish:
+    name: Publish to npm
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Needs a person's approval: set "Required reviewers" on this environment in the repository settings.
+    environment: npm
+    permissions:
+      contents: read # read the repository
+      id-token: write # lets npm record where the package was built (provenance)
+      attestations: read # lets the check of the build attestation read it
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist-release
+      - name: Check that the tarball is the one that was built and attested
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist-release && sha256sum --check SHA256SUMS)
+          gh attestation verify dist-release/snarkjs-gpu-*.tgz --repo "$GITHUB_REPOSITORY"
+      - name: Publish the package that was built and attested (with provenance)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # The single quotes are intended: npm itself replaces ${NODE_AUTH_TOKEN} from the environment, so the token
+          # is never written to a file or printed.
+          # shellcheck disable=SC2016
+          printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$RUNNER_TEMP/npmrc"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npm publish dist-release/snarkjs-gpu-*.tgz --provenance --access public --ignore-scripts

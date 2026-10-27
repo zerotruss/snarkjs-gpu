@@ -1,0 +1,113 @@
+# Checks that need no GPU. The tests that prove real proofs (npm test, npm run test:browser, npm run test:cdn)
+# need a real GPU and a Circom setup: the maintainers run them on a real machine before each release.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust format and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          rustup default stable
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint the engine and the Node addon
+        run: cargo clippy --release -p zk-gpu-engine -p zk-gpu-node --all-targets -- -D warnings
+      - name: Lint the WebAssembly crate
+        run: cargo clippy --release -p zk-gpu-web --target wasm32-unknown-unknown -- -D warnings
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check with the version in Cargo.toml
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' engine/Cargo.toml | head -n 1)
+          rustup toolchain install "$version" --profile minimal
+          cargo +"$version" check --release -p zk-gpu-engine -p zk-gpu-node
+
+  package:
+    name: Build and check the npm package
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust and wasm-pack
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+          cargo install wasm-pack --locked --version 0.15.0
+      - name: Install wasm-opt at a fixed, checked version
+        run: scripts/install-binaryen.sh >> "$GITHUB_PATH"
+      - name: Install npm packages (without running their install scripts)
+        run: npm ci --ignore-scripts
+      - name: Build the WebAssembly and the bundles
+        run: npm run build:package
+      - name: Size budget
+        run: |
+          check() { size=$(wc -c < "$1"); echo "$1: $size bytes (limit $2)"; [ "$size" -le "$2" ] || exit 1; }
+          check dist/zk_gpu_web_bg.wasm 400000
+          check dist/snarkjs-gpu.esm.js 60000
+          check dist/snarkjs-gpu.iife.js 60000
+      - name: The package contains exactly the expected files
+        run: |
+          npm pack --dry-run --json > pack.json
+          python3 - <<'EOF'
+          import json
+          files = sorted(f["path"] for f in json.load(open("pack.json"))[0]["files"])
+          expected = sorted(["LICENSE", "README.md", "package.json", "dist/snarkjs-gpu.esm.js",
+                             "dist/snarkjs-gpu.iife.js", "dist/zk_gpu_web_bg.wasm"])
+          print(files)
+          assert files == expected, f"unexpected package contents: {files}"
+          EOF
+
+  workflows:
+    name: Check the workflow files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint (mistakes in workflow files) at a fixed, checked version
+        run: |
+          version=1.7.12
+          sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          echo "${sha256}  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml
+      - name: zizmor (security problems in workflow files)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo install zizmor --locked --version 1.31.1
+          zizmor --no-progress --persona auditor .github
