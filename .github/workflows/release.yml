@@ -210,4 +210,6 @@ jobs:
           # is never written to a file or printed.
           # shellcheck disable=SC2016
           printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$RUNNER_TEMP/npmrc"
-          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npm publish dist-release/snarkjs-gpu-*.tgz --provenance --access public --ignore-scripts
+          # The "./" matters: npm reads a path such as dist-release/x.tgz as the GitHub shorthand owner/repo.
+          tarball=$(ls dist-release/snarkjs-gpu-*.tgz)
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npm publish "./$tarball" --provenance --access public --ignore-scripts
