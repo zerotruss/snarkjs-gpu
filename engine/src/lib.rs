@@ -36,7 +36,7 @@ pub fn point_bytes(group: Group) -> usize {
 }
 
 fn words(bytes: &[u8]) -> Vec<u32> {
-    bytes.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect()
+    bytes.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes(*b)).collect()
 }
 
 fn le_bytes(limbs: [u64; 4]) -> Vec<u8> {
